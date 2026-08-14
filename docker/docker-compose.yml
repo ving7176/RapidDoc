@@ -2,6 +2,9 @@ services:
   rapid-doc-server:
     container_name: rapid-doc-server
     image: hzkitty/rapid-doc:0.9.9
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     ports:
       - "8888:8888"
     environment:
@@ -9,4 +12,7 @@ services:
       #- PADDLEOCRVL_VERSION=v1.6
       #- PADDLEOCRVL_VL_REC_BACKEND=vllm-server
       #- PADDLEOCRVL_VL_VL_REC_SERVER_URL=http://localhost:8118/v1
+    # 内存限制：物理内存 10GB，物理+swap 总上限 30GB（即 swap 上限 20GB）
+    mem_limit: 10g
+    memswap_limit: 30g
     restart: always

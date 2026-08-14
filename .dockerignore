@@ -1,0 +1,30 @@
+# 排除权重文件（download_models.py 会在镜像内下载到 /app/models）
+# 注意：只排除 download_models.py 会重新下载的 layout/table/formula 权重
+# resources/ 下的 OCR/orientation 权重和 magika 权重不在下载列表，必须保留
+rapid_doc/model/layout/rapid_layout_self/models/*.onnx
+rapid_doc/model/table/rapid_table_self/models/*.onnx
+rapid_doc/model/formula/rapid_formula_self/models/*.onnx
+
+# 排除缓存和无关产物
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.git
+.github
+.idea
+.vscode
+*.egg-info
+*.tar
+*.tar.gz
+*.zip
+*.log
+.DS_Store
+debug/
+tmp/
+temp/
+slurm_logs/
+bench_tmp.py
+package_rapiddoc_output.py
+demo/
+docs/
+tests/

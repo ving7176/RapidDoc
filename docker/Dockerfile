@@ -28,14 +28,14 @@ RUN sed -i 's|http://deb.debian.org/debian|https://mirrors.tuna.tsinghua.edu.cn/
 WORKDIR /app
 
 # 配置 pip 国内镜像与超时，降低大包下载超时概率
-ENV PIP_INDEX_URL=https://pypi.org/simple
+ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ENV PIP_DEFAULT_TIMEOUT=300
 ENV PIP_RETRIES=10
 
 # 安装 Python 依赖
 RUN python3 -m pip install --upgrade pip setuptools wheel --break-system-packages && \
     python3 -m pip install --no-cache-dir --prefer-binary --break-system-packages \
-        --index-url https://pypi.org/simple \
+        --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
         'rapid-doc[cpu,api]==0.9.9' && \
     python3 -m pip cache purge
 
@@ -48,6 +48,9 @@ RUN sed -i 's/\r$//' /app/start_with_env.sh && chmod +x /app/start_with_env.sh
 
 # 复制应用代码（最后复制，避免频繁变更影响缓存）
 COPY docker/app.py docker/file_converter.py docker/download_file.py docker/download_models.py docker/models_download_utils.py /app/
+
+# 覆盖 rapid_doc 包源码（本地修改版，覆盖 pip 安装的版本）
+COPY rapid_doc/ /app/rapid_doc/
 
 # 设置基础环境变量
 ENV PYTHONPATH=/app
