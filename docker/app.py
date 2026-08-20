@@ -41,7 +41,7 @@ async def health_check():
     return {
         "status": "healthy",
         "version": __version__,
-        "patch_version": "20260820-p4",
+        "patch_version": "20260820-p6",
         "api": "RapidDoc Web API",
         "compatible": "Official RapidDoc API"
     }
@@ -144,70 +144,67 @@ def has_vl_env():
 
 
 def build_images_manifest(parse_dir: str, pdf_name: str) -> Optional[dict]:
-    """生成 images_manifest.json 内容：客户端-服务端图片对账契约。
+    """生成 images_manifest.json：内容图契约（客户端兜底与三方对账依据）。
 
-    每张图片声明 {file, sha256, bytes, width, height, page_idx, bbox}；
-    page_idx/bbox 取自 middle_json 中的 image span（找不到则置 null）。
+    只收录 middle_json 中 type=IMAGE 的 span 落盘且 md 引用的图：
+    {file, sha256, bytes, width, height, page_idx, bbox}。
+    表格/公式区域截图（md 不引用属正常）不进 manifest，避免客户端兜底误补。
+    md 有引用但 manifest 缺失 -> 服务端图文件丢失（告警场景）；
+    manifest 有但 md 未引用 -> 客户端按页序补挂的目标场景。
     """
-    images_dir = os.path.join(parse_dir, "images")
-    image_paths = (glob.glob(os.path.join(glob.escape(images_dir), "*.jpg")) +
-                   glob.glob(os.path.join(glob.escape(images_dir), "*.png")))
-    if not image_paths:
-        return None
-
     import hashlib
     from PIL import Image as PILImage
 
-    # middle_json 中的 image span 位置索引（file basename → {page_idx, bbox}）
-    loc_index = {}
+    # middle_json 中 IMAGE span 引用的文件 -> {basename: [{page_idx, bbox}]}
+    ref_index = {}
     middle_path = os.path.join(parse_dir, f"{pdf_name}_middle.json")
-    if os.path.exists(middle_path):
-        try:
-            with open(middle_path, "r", encoding="utf-8") as f:
-                middle = json.load(f)
-            for page_info in middle.get("pdf_info", []):
-                page_idx = page_info.get("page_idx")
-                # 兼容 para_split 前后两种结构：preproc_blocks/paras → lines → spans
-                for key in ("paras", "preproc_blocks"):
-                    for para_block in page_info.get(key, []) or []:
-                        blocks = para_block if isinstance(para_block, list) else [para_block]
-                        for block in blocks:
-                            if not isinstance(block, dict):
-                                continue
-                            for line in block.get("lines", []) or []:
-                                if not isinstance(line, dict):
-                                    continue
+    if not os.path.exists(middle_path):
+        return None
+    try:
+        with open(middle_path, "r", encoding="utf-8") as f:
+            middle = json.load(f)
+        for page_info in middle.get("pdf_info", []):
+            page_idx = page_info.get("page_idx")
+            for key in ("para_blocks", "preproc_blocks"):
+                for para_block in page_info.get(key, []) or []:
+                    blocks = para_block if isinstance(para_block, list) else [para_block]
+                    for block in blocks:
+                        if not isinstance(block, dict):
+                            continue
+                        for sub in block.get("blocks", []) or []:
+                            for line in sub.get("lines", []) or []:
                                 for span in line.get("spans", []) or []:
                                     if isinstance(span, dict) and span.get("type") == "image":
                                         base = os.path.basename(span.get("image_path") or "")
                                         if base:
-                                            loc_index.setdefault(base, []).append(
+                                            ref_index.setdefault(base, []).append(
                                                 {"page_idx": page_idx, "bbox": span.get("bbox")})
-        except Exception as e:
-            logger.warning(f"build_images_manifest: middle_json parse failed: {e}")
+    except Exception as e:
+        logger.warning(f"build_images_manifest: middle_json parse failed: {e}")
+        return None
 
     items = []
-    for image_path in image_paths:
-        base = os.path.basename(image_path)
+    for base, locs in ref_index.items():
+        image_path = os.path.join(parse_dir, "images", base)
+        if not os.path.exists(image_path):
+            continue
         with open(image_path, "rb") as f:
             data = f.read()
         item = {
             "file": base,
             "sha256": hashlib.sha256(data).hexdigest(),
             "bytes": len(data),
-            "page_idx": None,
-            "bbox": None,
+            "page_idx": locs[0]["page_idx"],
+            "bbox": locs[0]["bbox"],
         }
         try:
             with PILImage.open(image_path) as im:
                 item["width"], item["height"] = im.size
         except Exception:
             item["width"] = item["height"] = None
-        locs = loc_index.get(base)
-        if locs:
-            item["page_idx"] = locs[0]["page_idx"]
-            item["bbox"] = locs[0]["bbox"]
         items.append(item)
+    if not items:
+        return None
     items.sort(key=lambda x: (x["page_idx"] is None, x["page_idx"] or 0, x["file"]))
     return {"images": items, "count": len(items)}
 
