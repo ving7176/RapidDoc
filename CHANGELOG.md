@@ -2,6 +2,13 @@
 
 ## 2026-08-20
 
+### feat(p6): 图片兜底与 manifest 契约优化（build/docker-optimization = 4002eed）
+
+- 图片兜底第 1 层补全不再依赖 `ori_image_list`：用 image_body 合法 bbox 从页面渲染图裁剪落盘，对 pdfium 提取问题免疫
+- 第 2 层 ori 追加默认关闭，由 `RAPIDDOC_ORI_APPEND`（默认 false）控制，避免表格/公式区域截图误补进 md
+- `docker/app.py`：`patch_version` → `20260820-p6`；`build_images_manifest` 改为只收录 middle_json 中 md 引用的 IMAGE span 落盘图，用 md 引用反索引替代目录 glob，表格/公式截图不再进 manifest
+- 环境变量：`RAPIDDOC_MIN_ORI_AREA_RATIO`（默认 0.08，第 1 层阈值）、`RAPIDDOC_ORI_APPEND`（默认 false）
+
 ### fix: 部署脚本卡在 Fetching upstream（国内网络访问 GitHub 超时）
 
 - 根因：`git fetch --all --prune` 会同时 fetch 官方 upstream（GitHub），国内网络下超时挂起
