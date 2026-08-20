@@ -36,8 +36,12 @@ log "compose 命令: $COMPOSE"
 if [ -d "$APP_DIR/.git" ]; then
   log "已有代码目录: $APP_DIR"
 else
+  mkdir -p "$APP_DIR"
+  if [ -n "$(ls -A "$APP_DIR" 2>/dev/null)" ] && [ ! -d "$APP_DIR/.git" ]; then
+    # 目录存在但非 git 仓库（例如之前只是 docker pull 过镜像、或手动建了目录）
+    die "目录 $APP_DIR 存在但非 git 仓库（缺少 .git），且不为空，无法原地迁移。\n请先确认是否要清理该目录后重来：\n  rm -rf $APP_DIR   # 确认里面没有需要保留的配置文件后再执行\n然后重新运行本脚本。\n若该目录是空的，可直接忽略并重跑（脚本会自动使用它）。"
+  fi
   log "无代码目录，克隆 ving7176 fork 到 $APP_DIR"
-  mkdir -p "$(dirname "$APP_DIR")"
   git clone --branch "$BRANCH" "$FORK_REPO" "$APP_DIR"
 fi
 cd "$APP_DIR"
