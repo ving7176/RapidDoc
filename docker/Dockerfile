@@ -46,12 +46,6 @@ COPY docker/start_with_env.sh /app/
 # 设置启动脚本权限
 RUN sed -i 's/\r$//' /app/start_with_env.sh && chmod +x /app/start_with_env.sh
 
-# 复制应用代码（最后复制，避免频繁变更影响缓存）
-COPY docker/app.py docker/file_converter.py docker/download_file.py docker/download_models.py docker/models_download_utils.py /app/
-
-# 覆盖 rapid_doc 包源码（本地修改版，覆盖 pip 安装的版本）
-COPY rapid_doc/ /app/rapid_doc/
-
 # 设置基础环境变量
 ENV PYTHONPATH=/app
 
@@ -61,8 +55,26 @@ ENV STARTUP_WAIT_TIME=15
 ENV LOG_LEVEL=INFO
 ENV MINERU_DEVICE_MODE=cpu
 ENV RAPID_MODELS_DIR=/app/models
+
+# ---------------------------------------------------------------------------
+# 模型层（前置）：只拷贝模型下载所需的最小文件 + rapid_doc/model 子结构，
+# 让模型下载层尽量前置、依赖面最小。
+# 效果：日后只更新普通业务代码（office/xlsx/utils/pipeline 等）时，
+# 不触发 rapid_doc/model 目录变化，本层整层命中 Docker 缓存，模型不重复下载。
+# 注：download_models.py 自带_should_skip_download 校验，
+#     文件已存在且 sha256 匹配时会跳过；权重文件已被 .dockerignore 排除。
+# ---------------------------------------------------------------------------
+COPY docker/download_file.py docker/download_models.py docker/models_download_utils.py /app/
+COPY rapid_doc/model/ /app/rapid_doc/model/
+
 # 下载默认模型文件实现离线部署
 RUN python3 download_models.py
+
+# 复制剩余应用代码（最后复制，避免频繁变更影响缓存）
+COPY docker/app.py docker/file_converter.py /app/
+
+# 覆盖 rapid_doc 包源码（本地修改版，覆盖 pip 安装的版本，含 model 之外全部代码）
+COPY rapid_doc/ /app/rapid_doc/
 
 # 暴露端口（默认端口，可通过环境变量在运行时修改）
 EXPOSE 8888 8888

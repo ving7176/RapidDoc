@@ -2,6 +2,14 @@
 
 ## 2026-08-20
 
+### build: 优化 Docker 模型下载缓存，避免代码更新时重复下载模型
+
+- 调整 `docker/Dockerfile` 层顺序：模型下载层前置（只 COPY 下载脚本 + `rapid_doc/model/` 子结构），业务代码层放最后
+- 效果：日后只更新 office/xlsx/utils/pipeline 等业务代码时，`rapid_doc/model` 目录不变 → 模型层整层命中 Docker 缓存，不再重新下载几百 MB 权重
+- 校验：`download_models.py` 自带 `_should_skip_download`（文件存在且 sha256 匹配则跳过，不匹配则重下）；`rapid_doc/model/__init__.py` 为空、`office_stream.py` 仅依赖标准库，模型层 `import rapid_doc.model.*.configs` 不依赖 model 之外代码
+- 新增 `docker/deploy.sh` 一键部署脚本（git 拉取 fork 分支、停旧容器、构建、启动、健康检查）
+
+
 ### fix: 合入大 Excel OOM 修复（来自 fix/large-excel-oom 分支 dbfcb69）
 
 - 新增大 Excel 轻量级解析路径：sheet XML >5MB 时跳过 openpyxl，用 iterparse 流式解析（`_LightweightSheet`/`_LightCell` 仅存非空单元格），内存峰值 12GB+（OOM）-> 约 2.2GB
