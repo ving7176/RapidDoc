@@ -2,6 +2,14 @@
 
 ## 2026-08-20
 
+### chore: 仓库迁移到 Gitee 主源，GitHub 转为镜像
+
+- remote 调整：`origin` → Gitee（`git@gitee.com:kkje/rapid-doc.git`，主源，日常开发 + 服务器拉取）；`github` → GitHub fork（镜像）；`upstream` → 官方 RapidAI/RapidDoc（保留关联）
+- `git push` 配置为同时推 Gitee + GitHub（origin 两个 pushurl，`.git/config`）
+- `migrate_and_deploy.sh` 默认源改为 Gitee，clone/pull 加 3 次重试规避国内网络瞬时断连
+- 服务器端从此通过 `https://gitee.com/kkje/rapid-doc.git` 拉取，规避 GitHub TLS 断连
+
+
 ### build: 优化 Docker 模型下载缓存，避免代码更新时重复下载模型
 
 - 调整 `docker/Dockerfile` 层顺序：模型下载层前置（只 COPY 下载脚本 + `rapid_doc/model/` 子结构），业务代码层放最后
