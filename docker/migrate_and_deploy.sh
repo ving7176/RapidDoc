@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# RapidDoc 一键迁移部署：从官方的 hzkitty 源切换到自己的 ving7176 fork，并部署最新代码。
+# RapidDoc 一键迁移部署：从任意源切换到你的 Gitee 主源并部署最新代码。
+#
+# 源仓库约定：
+#   - 主源：Gitee（日常开发 + 服务器拉取，国内快且稳，规避 GitHub TLS 断连）
+#   - 镜像：GitHub fork（仅作同步镜像）
+#   - 官方：RapidAI/RapidDoc 作为 upstream 保留
 #
 # 用法：bash migrate_and_deploy.sh
-# 可选环境变量：APP_DIR（默认 /opt/rapiddoc）
+# 可选环境变量：APP_DIR（默认 /opt/rapiddoc）、REPO_URL（默认 Gitee）、BRANCH（默认 build/docker-optimization）
 #
 # 脚本动作：
-#   1. 定位代码目录（不存在则克隆 ving7176 fork）
-#   2. 无论现有 origin 指向哪个源（hzkitty 等），强切到 ving7176 fork
-#   3. fetch + checkout build/docker-optimization 分支 + pull 最新代码
+#   1. 定位代码目录（不存在则克隆 Gitee 主源）
+#   2. 无论现有 origin 指向哪个源，强切到 Gitee 主源
+#   3. fetch + checkout 目标分支 + pull 最新代码
 #   4. docker-compose 停旧容器、构建新镜像（含模型下载）、启动、健康检查
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/rapiddoc}"
-FORK_REPO="https://github.com/ving7176/RapidDoc.git"
-BRANCH="build/docker-optimization"
+FORK_REPO="${REPO_URL:-https://gitee.com/kkje/rapid-doc.git}"
+BRANCH="${BRANCH:-build/docker-optimization}"
 API_PORT="${API_PORT:-8888}"
 
 # compose 命令探测（二选一执行）
@@ -41,22 +46,34 @@ else
     # 目录存在但非 git 仓库（例如之前只是 docker pull 过镜像、或手动建了目录）
     die "目录 $APP_DIR 存在但非 git 仓库（缺少 .git），且不为空，无法原地迁移。\n请先确认是否要清理该目录后重来：\n  rm -rf $APP_DIR   # 确认里面没有需要保留的配置文件后再执行\n然后重新运行本脚本。\n若该目录是空的，可直接忽略并重跑（脚本会自动使用它）。"
   fi
-  log "无代码目录，克隆 ving7176 fork 到 $APP_DIR"
-  git clone --branch "$BRANCH" "$FORK_REPO" "$APP_DIR"
+  log "无代码目录，克隆主源到 $APP_DIR（重试 3 次，规避国内网络瞬时断连）"
+  clone_with_retry() {
+    local n=0
+    until git clone --branch "$BRANCH" "$FORK_REPO" "$APP_DIR"; do
+      n=$((n+1))
+      [ "$n" -ge 3 ] && return 1
+      log "clone 失败，10s 后重试（第 $n/3 次）..."
+      sleep 10
+      rm -rf "$APP_DIR"
+    done
+    return 0
+  }
+  clone_with_retry || die "多次 clone 失败，请检查网络或 REPO_URL"
 fi
 cd "$APP_DIR"
 
-# ---------- 2. 确保 origin 指向 ving7176 fork ----------
+# ---------- 2. 确保 origin 指向 Gitee 主源 ----------
 CURR_ORIGIN="$(git remote get-url origin 2>/dev/null || echo '')"
-if [ "$CURR_ORIGIN" != "$FORK_REPO" ] && [ "$CURR_ORIGIN" != "git@github.com:ving7176/RapidDoc.git" ]; then
+GITEE_URL="https://gitee.com/kkje/rapid-doc.git"
+if [ "$CURR_ORIGIN" != "$FORK_REPO" ] && [ "$CURR_ORIGIN" != "$GITEE_URL" ] && [ "$CURR_ORIGIN" != "git@gitee.com:kkje/rapid-doc.git" ]; then
   if [ -n "$CURR_ORIGIN" ]; then
-    log "origin 当前是: $CURR_ORIGIN（非 ving7176），先移除再改为 fork"
+    log "origin 当前是: $CURR_ORIGIN（非 Gitee 主源），先移除再改为主源"
     git remote remove origin
   fi
-  log "设置 origin 为 ving7176 fork: $FORK_REPO"
+  log "设置 origin 为 Gitee 主源: $FORK_REPO"
   git remote add origin "$FORK_REPO"
   
-  # 顺带把 hzkitty 官方仓库保留为 upstream（便于回看），幂等
+  # 顺带把官方 RapidAI/RapidDoc 保留为 upstream（便于回看），幂等
   if ! git remote get-url upstream >/dev/null 2>&1; then
     git remote add upstream https://github.com/RapidAI/RapidDoc.git || true
   fi
@@ -72,7 +89,13 @@ if [ -n "$(git status --porcelain)" ]; then
   log "检测到本地未提交改动，已暂存以备恢复（不覆盖）"
   git stash push -m "rapiddoc-auto-stash-$(date +%s)" || true
 fi
-git pull --ff-only origin "$BRANCH" || die "git pull 失败，请手动处理 $APP_DIR 的冲突"
+n=0
+until git pull --ff-only origin "$BRANCH"; do
+  n=$((n+1))
+  [ "$n" -ge 3 ] && die "git pull 失败，请处理后重试：cd $APP_DIR && git pull --ff-only origin $BRANCH"
+  log "pull 失败，10s 后重试（第 $n/3 次）..."
+  sleep 10
+done
 log "当前代码版本: $(git rev-parse --short HEAD)"
 
 # ---------- 4. 停旧容器 ----------
