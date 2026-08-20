@@ -638,15 +638,18 @@ class XlsxConverter:
                     rich_text=True,
                 )
                 if self.workbook is not None:
-                    for idx, ws in enumerate(self._iter_sheets_to_convert(), start=1):
-                        logger.debug(f"正在处理第 {idx} 个工作表：{ws.title}")
+                    # 遍历需要参与转换的工作表，避免为隐藏表或尾部空页生成无效页面。
+                    sheet_pages = []
+                    for idx, sheet in enumerate(self._iter_sheets_to_convert(), start=1):
+                        logger.debug(f"正在处理第 {idx} 个工作表：{sheet.title}")
                         self.cur_page = []
-                        self._convert_sheet(ws)
-                        if self._should_emit_sheet_titles(
-                            [(ws.title, self.cur_page)]
-                        ):
-                            pass  # 单 sheet 不加标题
-                        self.pages.append(self.cur_page)
+                        self._convert_sheet(sheet)
+                        sheet_pages.append((sheet.title, self.cur_page))
+                    if self._should_emit_sheet_titles(
+                        [page for _, page in sheet_pages]
+                    ):
+                        self._prepend_sheet_titles(sheet_pages)
+                    self.pages.extend(page for _, page in sheet_pages)
                 else:
                     logger.error("工作簿未初始化。")
         finally:
@@ -1450,8 +1453,8 @@ class XlsxConverter:
     def _select_best_gap_candidate(
         self, sheet: Worksheet
     ) -> tuple[int, float, list[ExcelTable]]:
-        """逐候选值串行执行，每次 GC，峰值内存 1x 而非 Nx。"""
-        best = None
+        """逐候选值串行执行并即时释放中间结果，降低峰值内存；选优保留 tie-break。"""
+        candidates = []
         for gap_tolerance in AUTO_GAP_TOLERANCE_CANDIDATES:
             raw_tables = self._find_data_tables_with_gap_raw(sheet, gap_tolerance)
             summary = self._summarize_candidate_tables(raw_tables)
@@ -1463,23 +1466,39 @@ class XlsxConverter:
                 + 0.5 * float(summary["weighted_blank_ratio"])
                 + 1.0 * float(summary["row_overlap_excess_ratio"])
             )
-            tables = self._filter_semantic_subset_tables(raw_tables)
-            candidate = {
-                "gap_tolerance": gap_tolerance,
-                "penalty": penalty,
-                "tables": tables,
-                **summary,
-            }
-            if best is None or penalty < best["penalty"]:
-                best = candidate
+            candidates.append(
+                {
+                    "gap_tolerance": gap_tolerance,
+                    "penalty": penalty,
+                    "tables": self._filter_semantic_subset_tables(raw_tables),
+                    **summary,
+                }
+            )
             # 释放当前候选值的中间结果，GC 后再跑下一个
-            del raw_tables, summary, tables, candidate
+            del raw_tables, summary
             gc.collect()
 
+        min_penalty = min(float(candidate["penalty"]) for candidate in candidates)
+        near_best_candidates = [
+            candidate
+            for candidate in candidates
+            if float(candidate["penalty"])
+            <= (min_penalty + AUTO_GAP_TOLERANCE_PREFERENCE_MARGIN)
+        ]
+
+        best_candidate = min(
+            near_best_candidates,
+            key=lambda candidate: (
+                int(candidate["severe_separator_count"]),
+                AUTO_GAP_TOLERANCE_PREFERENCE[int(candidate["gap_tolerance"])],
+                float(candidate["interior_blank_line_ratio"]),
+                float(candidate["penalty"]),
+            ),
+        )
         return (
-            int(best["gap_tolerance"]),
-            float(best["penalty"]),
-            best["tables"],
+            int(best_candidate["gap_tolerance"]),
+            float(best_candidate["penalty"]),
+            best_candidate["tables"],
         )
 
     def _select_best_tables(self, sheet: Worksheet) -> list[ExcelTable]:
