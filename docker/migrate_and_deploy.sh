@@ -82,8 +82,9 @@ else
 fi
 
 # ---------- 3. 切分支 + 拉最新代码 ----------
-log "fetch + checkout $BRANCH + pull"
-git fetch --all --prune
+log "fetch origin + checkout $BRANCH + pull"
+# 只 fetch 主源 origin（Gitee），避免 --all 一起 fetch upstream（官方 GitHub）在国内网络下超时挂起
+git fetch origin --prune
 git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH" "origin/$BRANCH"
 if [ -n "$(git status --porcelain)" ]; then
   log "检测到本地未提交改动，已暂存以备恢复（不覆盖）"

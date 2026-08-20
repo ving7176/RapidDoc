@@ -2,7 +2,12 @@
 
 ## 2026-08-20
 
-### docs: 固定 A 方案部署说明（Gitee 主源）
+### fix: 部署脚本卡在 Fetching upstream（国内网络访问 GitHub 超时）
+
+- 根因：`git fetch --all --prune` 会同时 fetch 官方 upstream（GitHub），国内网络下超时挂起
+- 修复：改为 `git fetch origin --prune`，只拉 Gitee 主源，不碰 upstream
+- 服务器善后：删除已添加的 upstream remote 并重新下载脚本（见 README）
+
 
 - README 部署章节改写为「固定 A 方案」：一次性初始化（下载脚本到 /opt/rapiddoc/deploy.sh）+ 每次重部署仅 `deploy.sh` 一条命令
 - 脚本幂等，自动强切 origin 到 Gitee、拉代码、停旧容器、build、启动、健康检查
