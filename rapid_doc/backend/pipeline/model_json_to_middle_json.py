@@ -4,6 +4,7 @@
 """
 import os
 from tqdm import tqdm
+from loguru import logger
 
 from rapid_doc.backend.utils.utils import cross_page_table_merge
 from rapid_doc.model.custom import CustomBaseModel
@@ -292,6 +293,105 @@ def _optimize_formula_number_blocks(pdf_info_list):
         page_info["preproc_blocks"] = optimized_blocks
 
 
+def _append_missing_ori_image_blocks(middle_json, page_dict_list, images_list, image_writer):
+    """输出端兜底（确定性图片保全的最后一道闸）。
+
+    布局层 reinject 的 image block 存在但 image span 未生成 image_path 时，
+    此处在 para_split 后把「未被任何 image span 覆盖、面积占比 >= 阈值」的
+    xref 原图直接补成 image span：cut_image_and_table 落盘 + 挂进 para_blocks，
+    确保 md 组装能输出 ![](images/...)。
+
+    阈值：RAPIDDOC_MIN_ORI_AREA_RATIO（默认 0.10，页面面积占比，过滤 logo/横幅）。
+    """
+    import math
+
+    min_ratio = float(os.getenv('RAPIDDOC_MIN_ORI_AREA_RATIO', '0.12'))
+
+    def _iou(a, b):
+        x1, y1 = max(a[0], b[0]), max(a[1], b[1])
+        x2, y2 = min(a[2], b[2]), min(a[3], b[3])
+        inter = max(0, x2 - x1) * max(0, y2 - y1)
+        ua = max(0, a[2] - a[0]) * max(0, a[3] - a[1])
+        ub = max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+        return inter / (ua + ub - inter) if (ua + ub - inter) > 0 else 0.0
+
+    def _contain(inner, outer):
+        x1, y1 = max(inner[0], outer[0]), max(inner[1], outer[1])
+        x2, y2 = min(inner[2], outer[2]), min(inner[3], outer[3])
+        inter = max(0, x2 - x1) * max(0, y2 - y1)
+        area = max(0, inner[2] - inner[0]) * max(0, inner[3] - inner[1])
+        return inter / area if area > 0 else 0.0
+
+    for pidx, page_info in enumerate(middle_json.get("pdf_info", [])):
+        if pidx >= len(page_dict_list) or pidx >= len(images_list):
+            continue
+        page_dict = page_dict_list[pidx]
+        ori_list = page_dict.get("ori_image_list") or []
+        if not ori_list:
+            continue
+        page_w, page_h = page_info.get("page_size", [0, 0])
+        page_area = float(page_w) * float(page_h)
+        if page_area <= 0:
+            continue
+        image_dict = images_list[pidx]
+        scale = image_dict["scale"]
+        page_pil_img = image_dict["img_pil"]
+        page_img_md5 = bytes_md5(page_pil_img.tobytes())
+        page_idx = page_info.get("page_idx", pidx)
+
+        # 现有 image span / table block 的 bbox（页面坐标）
+        have, tables = [], []
+        for blk in page_info.get("para_blocks", []) or []:
+            if blk.get("type") == "table":
+                tables.append(blk.get("bbox"))
+            for sub in blk.get("blocks", []) or []:
+                if sub.get("type") == "image_body":
+                    for ln in sub.get("lines", []) or sub.get("virtual_lines", []) or []:
+                        for sp in ln.get("spans", []) or []:
+                            if sp.get("type") == ContentType.IMAGE and sp.get("bbox"):
+                                have.append(sp["bbox"])
+
+        appended = []
+        for ori in ori_list:
+            ob = ori.get("bbox")
+            if not ob or len(ob) < 4:
+                continue
+            ob_area = max(0, ob[2] - ob[0]) * max(0, ob[3] - ob[1])
+            if ob_area < min_ratio * page_area:
+                continue  # 小图/logo/横幅
+            if any(_iou(ob, h) >= 0.3 for h in have):
+                continue  # 已有图片区域覆盖
+            if any(_contain(ob, t) >= 0.8 for t in tables if t):
+                continue  # 表格区域（表格单独截图）
+            span = {"type": ContentType.IMAGE, "bbox": ob, "score": 1.0,
+                    "original_label": "image", "content": "", "image_path": ""}
+            cut_image_and_table(span, ori_list, False, 0.3, page_pil_img,
+                                page_img_md5, page_idx, image_writer, scale=scale)
+            if not span.get("image_path"):
+                continue
+            have.append(ob)
+            appended.append(span)
+
+        if not appended:
+            continue
+        blocks = page_info.setdefault("para_blocks", [])
+        index = max([b.get("index", 0) for b in blocks] or [-1]) + 1
+        for span in appended:
+            bbox = span["bbox"]
+            bbox = [math.floor(v * 100) / 100 for v in bbox]
+            pts = [[bbox[0], bbox[1]], [bbox[0], bbox[3]], [bbox[2], bbox[3]], [bbox[2], bbox[1]]]
+            blk = {"type": "image", "bbox": bbox, "index": index,
+                   "blocks": [{"type": "image_body", "bbox": bbox, "index": 0,
+                               "group_id": 0, "original_label": "image",
+                               "polygon_points": pts,
+                               "lines": [{"bbox": bbox, "spans": [span]}],
+                               "virtual_lines": []}],
+                   "polygon_points": pts}
+            blocks.append(blk)
+            index += 1
+        logger.info(f'_append_missing_ori_image_blocks: page {pidx} +{len(appended)} image(s)')
+
+
 def result_to_middle_json(
     model_list,
     images_list,
@@ -381,7 +481,10 @@ def result_to_middle_json(
     
     # 分段处理
     para_split(middle_json["pdf_info"])
-    
+
+    # 输出端兜底：未覆盖的 xref 原图补 image span（确定性图片保全最后一道闸）
+    _append_missing_ori_image_blocks(middle_json, page_dict_list, images_list, image_writer)
+
     # 表格跨页合并
     cross_page_table_merge(middle_json["pdf_info"])
     
