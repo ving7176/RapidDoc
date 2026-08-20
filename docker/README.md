@@ -79,21 +79,45 @@ curl -X POST "http://localhost:8888/parse" \
 | `RAPIDDOC_PARSE_TIMEOUT` | `600` | 单文件解析超时（秒），超时返回 504 |
 | `RAPIDDOC_REINJECT_ORI_IMAGE` | `true` | 是否回注未被覆盖的原图（`false/0/no` 关闭） |
 
-## 一键部署脚本
+## 一键部署（固定 A 方案，推荐长期使用）
 
-`deploy.sh` 提供服务器端一键部署：拉取代码 → 停旧容器 → 构建镜像（含模型下载）→ 启动 → 健康检查。
+仓库以 **Gitee 为主源**（日常开发 + 服务器拉取，国内快且稳），GitHub fork 仅作同步镜像，官方 RapidAI 为 upstream。
+
+### 一次性初始化（服务器上，仅需执行一次）
+
+把部署脚本下载到固定位置，后续永远复用：
 
 ```bash
-cd docker
-./deploy.sh                # 默认部署 / 更新
-./deploy.sh --force        # 无缓存彻底重建
-
-# 自定义参数
-APP_DIR=/opt/rapiddoc REPO_URL=https://github.com/ving7176/RapidDoc.git \
-BRANCH=build/docker-optimization API_PORT=8888 ./deploy.sh
+mkdir -p /opt/rapiddoc
+curl -fsSL https://gitee.com/kkje/rapid-doc/raw/build/docker-optimization/docker/migrate_and_deploy.sh -o /opt/rapiddoc/deploy.sh
+chmod +x /opt/rapiddoc/deploy.sh
 ```
 
-默认从 `https://github.com/ving7176/RapidDoc.git` 的 `build/docker-optimization` 分支拉取，部署到 `/opt/rapiddoc`，监听端口 `8888`。
+### 之后每次重新部署（唯一需要记住的命令）
+
+```bash
+/opt/rapiddoc/deploy.sh
+```
+
+脚本每次自动完成（幂等，反复跑安全）：
+
+1. 定位 `/opt/rapiddoc`（无则从 Gitee 克隆 `build/docker-optimization` 分支）
+2. **强制把 origin 切到 Gitee**（无论服务器之前是 GitHub / hzkitty 源）→ `git fetch` + `git pull` 拉到最新代码
+3. 停旧容器（`docker compose down`）
+4. `docker compose build`（重新构建镜像，模型层命中缓存不重复下载）
+5. `docker compose up -d` 启动
+6. 健康检查（等待服务就绪）
+
+> 你本机 `git push`（双推 Gitee + GitHub）后，服务器只需重跑这一条命令即可部署到最新代码。
+> 可选参数：`APP_DIR`（默认 /opt/rapiddoc）、`REPO_URL`（默认 Gitee）、`BRANCH`（默认 build/docker-optimization）、`API_PORT`（默认 8888）。
+
+### 备选：连脚本本身也每次拉最新版
+
+脚本改动频率低，一般用上方固定版即可；若需脚本也自动更新，可用：
+
+```bash
+bash <(curl -fsSL https://gitee.com/kkje/rapid-doc/raw/build/docker-optimization/docker/migrate_and_deploy.sh)
+```
 
 ## 模型缓存机制（重要）
 

@@ -2,7 +2,12 @@
 
 ## 2026-08-20
 
-### chore: 仓库迁移到 Gitee 主源，GitHub 转为镜像
+### docs: 固定 A 方案部署说明（Gitee 主源）
+
+- README 部署章节改写为「固定 A 方案」：一次性初始化（下载脚本到 /opt/rapiddoc/deploy.sh）+ 每次重部署仅 `deploy.sh` 一条命令
+- 脚本幂等，自动强切 origin 到 Gitee、拉代码、停旧容器、build、启动、健康检查
+- 服务器统一用 Gitee 拉取，规避 GitHub TLS 断连；GitHub fork 仅作同步镜像
+
 
 - remote 调整：`origin` → Gitee（`git@gitee.com:kkje/rapid-doc.git`，主源，日常开发 + 服务器拉取）；`github` → GitHub fork（镜像）；`upstream` → 官方 RapidAI/RapidDoc（保留关联）
 - `git push` 配置为同时推 Gitee + GitHub（origin 两个 pushurl，`.git/config`）
