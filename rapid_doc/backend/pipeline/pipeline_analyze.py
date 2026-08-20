@@ -171,6 +171,8 @@ def doc_analyze(
             with PyPDFium2Parser.lock:
                 pdf_page_count = len(pdf_doc_list)
             for page_index in range(pdf_page_count):
+                if page_index % 10 == 0:
+                    logger.info(f'pipeline_analyze progress: page {page_index}/{pdf_page_count}')
                 pdf_page = None
                 try:
                     with PyPDFium2Parser.lock:
@@ -180,10 +182,9 @@ def doc_analyze(
                     if not _ocr_enable and page_dict['blocks']:
                         from rapid_doc.utils.pdf_text_tool import get_page_vector_lines
                         page_dict['vector_lines'] = get_page_vector_lines(pdf_page)
-                    if page_dict['blocks']:
-                        page_dict['ori_image_list'] = get_ori_image(pdf_page) # 从 PDF 中提取所有原始图片
-                    else:
-                        page_dict['ori_image_list'] = [] # 提取不到文字视为扫描版，不需要提取图片
+                    # 无条件提取 xref 原图：无文字层的扫描/截图页同样可能承载内容图，
+                    # 是否注入由 batch_analyze 的确定性回注统一判定（此前置空导致此类页面必然丢图）
+                    page_dict['ori_image_list'] = get_ori_image(pdf_page)
                     all_pdf_dict.append(page_dict)
                 finally:
                     close_pdfium_child(pdf_page)

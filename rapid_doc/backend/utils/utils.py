@@ -29,6 +29,92 @@ def cross_page_table_merge(pdf_info: list[dict]):
         logger.warning(f'unknown MINERU_TABLE_MERGE_ENABLE config: {is_merge_table}, pass')
         pass
 
+def _bbox_iou(a, b):
+    """两 bbox 的 IoU。"""
+    x1, y1 = max(a[0], b[0]), max(a[1], b[1])
+    x2, y2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0, x2 - x1) * max(0, y2 - y1)
+    area_a = max(0, a[2] - a[0]) * max(0, a[3] - a[1])
+    area_b = max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _containment(inner, outer):
+    """inner 被 outer 覆盖的面积占比。"""
+    x1, y1 = max(inner[0], outer[0]), max(inner[1], outer[1])
+    x2, y2 = min(inner[2], outer[2]), min(inner[3], outer[3])
+    inter = max(0, x2 - x1) * max(0, y2 - y1)
+    area = max(0, inner[2] - inner[0]) * max(0, inner[3] - inner[1])
+    return inter / area if area > 0 else 0.0
+
+
+def reinject_uncovered_ori_images(images_layout_res, pdf_dict_list, scale_list,
+                                  min_area_ratio=0.1, cover_iou=0.3):
+    """确定性图片回注兜底（与布局模型无关）。
+
+    对每页的 xref 原图，若布局结果中没有任何 image 区域覆盖它
+    （IoU >= cover_iou），且它未被 table 区域大面积覆盖、面积占比
+    >= min_area_ratio（过滤 logo/横幅等小图），则强制注入 image 检测块。
+
+    与 remove_layout_in_ori_images 的关键差异：不跳过含文字的图片——
+    截图型操作手册的截图必然含文字，此前的 txt_in_ori_image 过滤正是
+    这类文档系统性丢图的根因。
+
+    环境开关：RAPIDDOC_REINJECT_ORI_IMAGE=false 可关闭（默认开启）。
+    """
+    if os.getenv('RAPIDDOC_REINJECT_ORI_IMAGE', 'true').lower() in ('false', '0', 'no'):
+        return images_layout_res
+
+    for index, layout_res in enumerate(images_layout_res):
+        ori_image_list = pdf_dict_list[index].get('ori_image_list')
+        scale = scale_list[index]
+        page_w = pdf_dict_list[index].get('page_info', {}).get('w', 0)
+        page_h = pdf_dict_list[index].get('page_info', {}).get('h', 0)
+        page_area = float(page_w) * float(page_h)
+        if not ori_image_list or page_area <= 0:
+            continue
+
+        # 布局结果 bbox：category_id==3 为图片，==2 为表格
+        image_bboxes = []
+        table_bboxes = []
+        for res in layout_res:
+            p = res.get('poly') or []
+            if len(p) < 8:
+                continue
+            bbox = [p[0], p[1], p[4], p[5]]
+            if res.get('category_id') == 3:
+                image_bboxes.append(bbox)
+            elif res.get('category_id') == 2:
+                table_bboxes.append(bbox)
+
+        injected = 0
+        for ori in ori_image_list:
+            ob = ori.get('bbox')
+            if not ob or len(ob) < 4:
+                continue
+            # 与 remove_layout_in_ori_images 相同约定：布局 bbox 为缩放后坐标
+            ob = [v * scale for v in ob[:4]]
+            ob_area = max(0, ob[2] - ob[0]) * max(0, ob[3] - ob[1])
+            if ob_area < min_area_ratio * page_area * scale * scale:
+                continue  # 小图/logo/窄横幅
+            if any(_bbox_iou(ob, ib) >= cover_iou for ib in image_bboxes):
+                continue  # 已有图片区域覆盖
+            if any(_containment(ob, tb) >= 0.8 for tb in table_bboxes):
+                continue  # 表格区域（表格会单独截图）
+            xmin, ymin, xmax, ymax = [int(v) for v in ob]
+            layout_res.append({
+                "category_id": 3,
+                "original_label": "image",
+                "poly": [xmin, ymin, xmax, ymin, xmax, ymax, xmin, ymax],
+                "score": 1.0,
+            })
+            injected += 1
+        if injected:
+            logger.info(f'reinject_uncovered_ori_images: page {index} +{injected} image(s)')
+    return images_layout_res
+
+
 def remove_layout_in_ori_images(images_layout_res, pdf_dict_list, scale_list):
     """
     移除落在原始图片区域内的 layout_res，

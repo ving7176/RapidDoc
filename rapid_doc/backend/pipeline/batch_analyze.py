@@ -15,7 +15,7 @@ from tqdm import tqdm
 from .analyze_utils import _extract_text_from_pdf, _run_ocr_det_batch, _process_single_table, _run_ocr_rec_postprocess
 from .model_init import AtomModelSingleton
 from .model_list import AtomicModel
-from ..utils.utils import remove_layout_in_ori_images, filter_overlap_boxes, _expand_formula_crop_res
+from ..utils.utils import remove_layout_in_ori_images, reinject_uncovered_ori_images, filter_overlap_boxes, _expand_formula_crop_res
 from ...model.custom import CustomBaseModel
 from ...utils.bbox_utils import normalize_to_int_bbox
 from ...utils.boxbase import get_rotate_image, restore_poly
@@ -174,6 +174,8 @@ class BatchAnalyze:
             np_images, self.layout_base_batch_size
         )
         images_layout_res = [filter_overlap_boxes(item, self.use_custom_ocr) for item in images_layout_res]
+        # 确定性兜底：布局模型漏判的 xref 原图强制回注（截图型手册/扫描页丢图根因修复）
+        images_layout_res = reinject_uncovered_ori_images(images_layout_res, pdf_dict_list, scale_list)
         # 如果是 txt 模式，移除原始图片中的版面元素
         if self.use_det_mode == 'txt':
             images_layout_res = remove_layout_in_ori_images(images_layout_res, pdf_dict_list, scale_list)

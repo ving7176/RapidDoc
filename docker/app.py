@@ -1,4 +1,5 @@
 import copy
+import asyncio
 import os
 import gc
 import json
@@ -141,6 +142,75 @@ def has_vl_env():
     ])
 
 
+def build_images_manifest(parse_dir: str, pdf_name: str) -> Optional[dict]:
+    """生成 images_manifest.json 内容：客户端-服务端图片对账契约。
+
+    每张图片声明 {file, sha256, bytes, width, height, page_idx, bbox}；
+    page_idx/bbox 取自 middle_json 中的 image span（找不到则置 null）。
+    """
+    images_dir = os.path.join(parse_dir, "images")
+    image_paths = (glob.glob(os.path.join(glob.escape(images_dir), "*.jpg")) +
+                   glob.glob(os.path.join(glob.escape(images_dir), "*.png")))
+    if not image_paths:
+        return None
+
+    import hashlib
+    from PIL import Image as PILImage
+
+    # middle_json 中的 image span 位置索引（file basename → {page_idx, bbox}）
+    loc_index = {}
+    middle_path = os.path.join(parse_dir, f"{pdf_name}_middle.json")
+    if os.path.exists(middle_path):
+        try:
+            with open(middle_path, "r", encoding="utf-8") as f:
+                middle = json.load(f)
+            for page_info in middle.get("pdf_info", []):
+                page_idx = page_info.get("page_idx")
+                # 兼容 para_split 前后两种结构：preproc_blocks/paras → lines → spans
+                for key in ("paras", "preproc_blocks"):
+                    for para_block in page_info.get(key, []) or []:
+                        blocks = para_block if isinstance(para_block, list) else [para_block]
+                        for block in blocks:
+                            if not isinstance(block, dict):
+                                continue
+                            for line in block.get("lines", []) or []:
+                                if not isinstance(line, dict):
+                                    continue
+                                for span in line.get("spans", []) or []:
+                                    if isinstance(span, dict) and span.get("type") == "image":
+                                        base = os.path.basename(span.get("image_path") or "")
+                                        if base:
+                                            loc_index.setdefault(base, []).append(
+                                                {"page_idx": page_idx, "bbox": span.get("bbox")})
+        except Exception as e:
+            logger.warning(f"build_images_manifest: middle_json parse failed: {e}")
+
+    items = []
+    for image_path in image_paths:
+        base = os.path.basename(image_path)
+        with open(image_path, "rb") as f:
+            data = f.read()
+        item = {
+            "file": base,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "bytes": len(data),
+            "page_idx": None,
+            "bbox": None,
+        }
+        try:
+            with PILImage.open(image_path) as im:
+                item["width"], item["height"] = im.size
+        except Exception:
+            item["width"] = item["height"] = None
+        locs = loc_index.get(base)
+        if locs:
+            item["page_idx"] = locs[0]["page_idx"]
+            item["bbox"] = locs[0]["bbox"]
+        items.append(item)
+    items.sort(key=lambda x: (x["page_idx"] is None, x["page_idx"] or 0, x["file"]))
+    return {"images": items, "count": len(items)}
+
+
 @app.post(
     "/file_parse",
     tags=["projects"],
@@ -256,27 +326,40 @@ async def file_parse(
             # 如果语言列表长度不匹配，使用第一个语言或默认"ch"
             actual_lang_list = [actual_lang_list[0] if actual_lang_list else "ch"] * len(pdf_file_names)
 
-        # 调用异步处理函数
-        await aio_do_parse(
-                output_dir=unique_dir,
-                pdf_file_names=pdf_file_names,
-                pdf_bytes_list=pdf_bytes_list,
-                p_lang_list=actual_lang_list,
-                backend=backend,
-                parse_method=parse_method,
-                formula_enable=formula_enable,
-                table_enable=table_enable,
-                f_draw_layout_bbox=False,
-                f_draw_span_bbox=False,
-                f_dump_md=return_md,
-                f_dump_middle_json=return_middle_json,
-                f_dump_model_output=return_model_output,
-                f_dump_orig_pdf=False,
-                f_dump_content_list=return_content_list,
-                start_page_id=start_page_id,
-                end_page_id=end_page_id,
-                layout_config = layout_config, ocr_config = ocr_config, formula_config = formula_config,
-                table_config = table_config, checkbox_config = checkbox_config, image_config = image_config,
+        # 调用异步处理函数（单文件总超时，防止任务无限挂起后只能外部 REVOKE）
+        parse_timeout = int(os.getenv('RAPIDDOC_PARSE_TIMEOUT', '600'))
+        # 内部强制落盘 middle_json：images_manifest 需要其 page_idx/bbox 做图片-页面对账
+        try:
+            await asyncio.wait_for(
+                aio_do_parse(
+                    output_dir=unique_dir,
+                    pdf_file_names=pdf_file_names,
+                    pdf_bytes_list=pdf_bytes_list,
+                    p_lang_list=actual_lang_list,
+                    backend=backend,
+                    parse_method=parse_method,
+                    formula_enable=formula_enable,
+                    table_enable=table_enable,
+                    f_draw_layout_bbox=False,
+                    f_draw_span_bbox=False,
+                    f_dump_md=return_md,
+                    f_dump_middle_json=True,
+                    f_dump_model_output=return_model_output,
+                    f_dump_orig_pdf=False,
+                    f_dump_content_list=return_content_list,
+                    start_page_id=start_page_id,
+                    end_page_id=end_page_id,
+                    layout_config = layout_config, ocr_config = ocr_config, formula_config = formula_config,
+                    table_config = table_config, checkbox_config = checkbox_config, image_config = image_config,
+                ),
+                timeout=parse_timeout,
+            )
+        except asyncio.TimeoutError:
+            shutil.rmtree(unique_dir, ignore_errors=True)
+            logger.error(f"parse timeout (> {parse_timeout}s), files: {pdf_file_names}")
+            return JSONResponse(
+                status_code=504,
+                content={"error": f"parse timeout after {parse_timeout}s", "files": pdf_file_names},
             )
 
         # 根据 response_format_zip 决定返回类型
@@ -322,6 +405,14 @@ async def file_parse(
                         for image_path in image_paths:
                             zf.write(image_path,
                                      arcname=os.path.join(safe_pdf_name, "images", os.path.basename(image_path)))
+                        # 图片对账契约：数量/指纹/页码位置，客户端据此做三方对账
+                        manifest = build_images_manifest(parse_dir, pdf_name)
+                        if manifest:
+                            manifest_path = os.path.join(parse_dir, "images_manifest.json")
+                            with open(manifest_path, "w", encoding="utf-8") as mf:
+                                json.dump(manifest, mf, ensure_ascii=False)
+                            zf.write(manifest_path,
+                                     arcname=os.path.join(safe_pdf_name, "images_manifest.json"))
             # 是否清理文件
             if clear_output_file:
                 shutil.rmtree(unique_dir, ignore_errors=True)
