@@ -2,6 +2,12 @@
 
 ## 2026-09-04
 
+### chore: 入库项目规范 AGENTS.md 与输出打包工具，gitignore 补本地产物
+
+- 新增 `AGENTS.md`（fork 定位、remote 三源约定、目录结构、开发规则）与 `package_rapiddoc_output.py`（RapidDoc 输出目录打包为 MinerU 同构 ZIP）
+- `.gitignore` 追加 `.zcode/`、`*.egg-info/`；`bench_tmp.py`（硬编码本机路径的临时压测脚本）保留本地不入库
+- 线上验证：`http://10.1.14.96:8888` 已发布 `20260904-p7`，枫向标 PDF 冒烟 3 套餐 22/22 关键字命中，36.3s
+
 ### fix(p7): 位图表格被文本层提取挡住导致整表空白，新增覆盖率兜底回退 OCR
 
 - 现象：数字版 PDF 内嵌位图表格（如「紧急枫向标20260821」p4 早安营养套餐表），版面检出 table 但框过大罩进框外标题文字，`_extract_table_text_from_pdf` 从文本层提取非空 → 跳过表格 OCR → 输出全空单元格
