@@ -353,6 +353,7 @@ def _process_single_table(
     rule_table_score_threshold = float(table_config.get("rule_table_score_threshold", 0.90))
     ocr_det_retry_padding = int(table_config.get("ocr_det_retry_padding", 8))
     ocr_det_retry_short_side = int(table_config.get("ocr_det_retry_short_side", 32))
+    pdf_text_coverage_threshold = float(table_config.get("pdf_text_coverage_threshold", 0.7))
 
 
     _lang = table_res_dict['lang']
@@ -475,7 +476,8 @@ def _process_single_table(
     # 尝试从 PDF 提取文本
     if (not table_force_ocr and not table_res_dict['ocr_enable'] and rotate_label == "0" and pdf_not_rotate):
         ocr_result = _extract_table_text_from_pdf(
-            table_res_dict, page_dict, scale, det_res, useful_list, table_use_word_box
+            table_res_dict, page_dict, scale, det_res, useful_list, table_use_word_box,
+            min_pdf_text_coverage=pdf_text_coverage_threshold
         )
 
     # 如果提取失败，使用 OCR
@@ -537,13 +539,45 @@ def _box_center_in(container, item) -> bool:
     cx, cy = (item[0] + item[2]) / 2, (item[1] + item[3]) / 2
     return container[0] <= cx <= container[2] and container[1] <= cy <= container[3]
 
+def calc_table_pdf_text_coverage(ocr_spans: List[Dict], use_word_box: bool) -> float:
+    """计算表格内 OCR-det 文字框被 PDF 文本层覆盖的面积占比。
+
+    txt_spans_extract 只会给匹配到文本层文字的 span 填 content/word_result，
+    未匹配的 span 无这两个键。位图表格的 det 框几乎全部无来源，占比趋近 0。
+    无有效 det 框时返回 1.0（交由调用方已有的空结果路径处理）。
+    """
+    total_area = 0.0
+    matched_area = 0.0
+    for item in ocr_spans:
+        bbox = item.get('bbox')
+        if not bbox or len(bbox) < 4:
+            continue
+        width = max(0, bbox[2] - bbox[0])
+        height = max(0, bbox[3] - bbox[1])
+        area = width * height
+        if area <= 0:
+            continue
+        total_area += area
+        if use_word_box:
+            words = item.get('word_result')
+            matched = bool(words) and any(w and str(w[0]).strip() for w in words)
+        else:
+            matched = bool(str(item.get('content') or '').strip())
+        if matched:
+            matched_area += area
+    if total_area <= 0:
+        return 1.0
+    return matched_area / total_area
+
+
 def _extract_table_text_from_pdf(
         table_res_dict: Dict,
         page_dict: Dict,
         scale: float,
         det_res: List,
         useful_list: List,
-        table_use_word_box
+        table_use_word_box,
+        min_pdf_text_coverage: float = 0.7,
 ) -> List:
     """从 PDF 中提取表格文本"""
     if not det_res:
@@ -551,6 +585,10 @@ def _extract_table_text_from_pdf(
 
     try:
         ocr_spans = get_ocr_result_list_table(det_res, useful_list, scale)
+        # txt_spans_extract 会原地 remove 无文本来源的低对比度 span，
+        # 覆盖率必须基于删除前的全量 det 框，否则位图表格文字被删后
+        # 覆盖率虚高（实测框架表 28 框被删到 6 框、coverage 1.0）
+        coverage_spans = list(ocr_spans)
         poly = table_res_dict['table_res']['poly']
         table_bboxes = [[
             int(poly[0] / scale), int(poly[1] / scale),
@@ -578,6 +616,24 @@ def _extract_table_text_from_pdf(
                 [item['ori_bbox'], normalize_table_ocr_text(item['content']), item['score']]
                 for item in ocr_spans if item.get('content')
             ]
+
+        if not filtered:
+            return []
+
+        # 文本层只解释了少部分文字框（如版面框过大罩进了框外标题，
+        # 表格本体是位图）时，提取结果不可信，回退 OCR 识别表格内容。
+        # 实测：文字表格 coverage≈1.0，位图表格+框外标题污染≈0.53
+        coverage = calc_table_pdf_text_coverage(coverage_spans, table_use_word_box)
+        logger.debug(
+            f'table pdf text coverage: det_boxes={len(det_res)} spans={len(ocr_spans)} '
+            f'coverage={coverage:.3f}'
+        )
+        if coverage < min_pdf_text_coverage:
+            logger.info(
+                f'table pdf text coverage {coverage:.2f} < {min_pdf_text_coverage}, '
+                f'fallback to table ocr'
+            )
+            return []
 
         return [list(x) for x in zip(*filtered)] if filtered else []
     except Exception:

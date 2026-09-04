@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-09-04
+
+### fix(p7): 位图表格被文本层提取挡住导致整表空白，新增覆盖率兜底回退 OCR
+
+- 现象：数字版 PDF 内嵌位图表格（如「紧急枫向标20260821」p4 早安营养套餐表），版面检出 table 但框过大罩进框外标题文字，`_extract_table_text_from_pdf` 从文本层提取非空 → 跳过表格 OCR → 输出全空单元格
+- 修复：`analyze_utils.py` 新增 `calc_table_pdf_text_coverage`（表格 det 文字框被 PDF 文本层覆盖的面积占比），`_extract_table_text_from_pdf` 提取后覆盖率低于 `pdf_text_coverage_threshold`（默认 0.7）则丢弃文本层结果回退表格 OCR；设 0 关闭（等价旧行为）
+- 阈值实测：文字表格 coverage=1.000（财报 38 框），位图表格+框外标题污染 coverage=0.528（9 框），0.7 两侧余量充足
+- 二次缺陷：`txt_spans_extract` 会原地 remove 无文本来源的低对比度 span（框架套位图表实测 28 框删到 6 框），覆盖率改在删除前对全量 det 框做快照计算，否则位图内容 coverage 虚高成 1.0 漏判
+- 全文档验证：「紧急枫向标20260821」12 页 3 个套餐（早安营养蛋香/营养蛋香/营养均衡）29 个产品关键字全部命中，行列结构完整
+- 单测：`tests/test_table_pdf_text_coverage.py`（13 例：覆盖率计算 + 回退分支 mock + 快照语义）
+- 回归：比亚迪财报文字表格 coverage 1.0 不回退、数值完整；xlsx_07 样例通过
+- `docker/app.py`：`patch_version` → `20260904-p7`
+
+## 2026-08-27
+
+### docs: 初始化 AGENTS.md
+
+- 新增项目规范：remote 三源约定（Gitee 主源、禁 fetch upstream）、目录结构、常用命令、开发规则（Dockerfile 模型层缓存、大 sheet 流式路径保护）
+
 ## 2026-08-20
 
 ### feat(p6): 图片兜底与 manifest 契约优化（build/docker-optimization = 4002eed）

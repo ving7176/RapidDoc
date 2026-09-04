@@ -227,6 +227,7 @@ def _build_config():
     table_config = {
         # "use_rule_table": True, # 非 OCR PDF 的高置信度有线表格优先使用 PDFium 原生字符与矢量线解析
         # "rule_table_score_threshold": 0.90, # 规则 HTML 低于该分数时回退当前配置的表格模型
+        # "pdf_text_coverage_threshold": 0.7, # 表格 det 文字框被 PDF 文本层覆盖的面积占比低于该值时回退表格 OCR（位图表格兜底），0 为关闭
         # "custom_model": PaddleOCRVLTableModel(),
         # "force_ocr": False, # 表格文字，是否强制使用ocr，默认 False 根据 parse_method 来判断是否需要ocr还是从pdf中直接提取文本
         # 注：文字版pdf可以使用pypdfium2提取到表格内图片，扫描版或图片需要使用PP_DOCLAYOUT_PLUS_L/PP_DOCLAYOUTV2版面识别模型，才能识别到表格内的图片

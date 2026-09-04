@@ -41,7 +41,7 @@ async def health_check():
     return {
         "status": "healthy",
         "version": __version__,
-        "patch_version": "20260820-p6",
+        "patch_version": "20260904-p7",
         "api": "RapidDoc Web API",
         "compatible": "Official RapidDoc API"
     }
